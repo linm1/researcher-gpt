@@ -5,6 +5,7 @@ from langchain import PromptTemplate
 from langchain.agents import initialize_agent, Tool
 from langchain.agents import AgentType
 from langchain.chat_models import ChatOpenAI
+from langchain.llms import VertexAI
 from langchain.prompts import MessagesPlaceholder
 from langchain.memory import ConversationSummaryBufferMemory
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -15,15 +16,13 @@ from typing import Type
 from bs4 import BeautifulSoup
 import requests
 import json
+import re
 from langchain.schema import SystemMessage
 from fastapi import FastAPI
 
 load_dotenv()
-brwoserless_api_key = os.getenv("BROWSERLESS_API_KEY")
+open_api_key = os.getenv("OPENAI_API_KEY")
 serper_api_key = os.getenv("SERP_API_KEY")
-
-# 1. Tool for search
-
 
 def search(query):
     url = "https://google.serper.dev/search"
@@ -43,37 +42,24 @@ def search(query):
 
     return response.text
 
-
-# 2. Tool for scraping
 def scrape_website(objective: str, url: str):
-    # scrape website, and also will summarize the content based on objective if the content is too large
-    # objective is the original objective & task that user give to the agent, url is the url of the website to be scraped
-
     print("Scraping website...")
-    # Define the headers for the request
-    headers = {
-        'Cache-Control': 'no-cache',
-        'Content-Type': 'application/json',
-    }
 
-    # Define the data to be sent in the request
-    data = {
-        "url": url
-    }
-
-    # Convert Python object to JSON string
-    data_json = json.dumps(data)
-
-    # Send the POST request
-    post_url = f"https://chrome.browserless.io/content?token={brwoserless_api_key}"
-    response = requests.post(post_url, headers=headers, data=data_json)
+    # Send a GET request to the URL
+    response = requests.get(url)
 
     # Check the response status code
     if response.status_code == 200:
-        soup = BeautifulSoup(response.content, "html.parser")
-        text = soup.get_text()
-        print("CONTENTTTTTT:", text)
+        # Parse the HTML content
+        soup = BeautifulSoup(response.content, 'html.parser')
+        get_text = soup.get_text()
+        # Clean the text by removing extra spaces, carriage returns, and line feeds
+        text = re.sub(r'\s+', ' ', get_text).strip()
+        #print("CONTENT:", text)
 
+        # Here you'd need a function `summary` defined elsewhere to summarize the content
+        # Assuming 'summary' is a function that takes the 'objective' and the 'text',
+        # and returns a summarized version of 'text'.
         if len(text) > 10000:
             output = summary(objective, text)
             return output
@@ -81,7 +67,6 @@ def scrape_website(objective: str, url: str):
             return text
     else:
         print(f"HTTP request failed with status code {response.status_code}")
-
 
 def summary(objective, content):
     llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-16k-0613")
@@ -109,13 +94,11 @@ def summary(objective, content):
 
     return output
 
-
 class ScrapeWebsiteInput(BaseModel):
     """Inputs for scrape_website"""
     objective: str = Field(
         description="The objective & task that users give to the agent")
     url: str = Field(description="The url of the website to be scraped")
-
 
 class ScrapeWebsiteTool(BaseTool):
     name = "scrape_website"
@@ -127,8 +110,7 @@ class ScrapeWebsiteTool(BaseTool):
 
     def _arun(self, url: str):
         raise NotImplementedError("error here")
-
-
+    
 # 3. Create langchain agent with the tools above
 tools = [
     Tool(
@@ -170,37 +152,21 @@ agent = initialize_agent(
     memory=memory,
 )
 
+import streamlit as st
+#4. Use streamlit to create a web app
+def main():
+    st.set_page_config(page_title="AI research agent", page_icon=":bird:")
 
-# 4. Use streamlit to create a web app
-# def main():
-#     st.set_page_config(page_title="AI research agent", page_icon=":bird:")
+    st.header("AI research agent :bird:")
+    query = st.text_input("Research goal")
 
-#     st.header("AI research agent :bird:")
-#     query = st.text_input("Research goal")
+    if query:
+        st.write("Doing research for ", query)
 
-#     if query:
-#         st.write("Doing research for ", query)
+        result = agent({"input": query})
 
-#         result = agent({"input": query})
-
-#         st.info(result['output'])
-
-
-# if __name__ == '__main__':
-#     main()
+        st.info(result['output'])
 
 
-# 5. Set this as an API endpoint via FastAPI
-app = FastAPI()
-
-
-class Query(BaseModel):
-    query: str
-
-
-@app.post("/")
-def researchAgent(query: Query):
-    query = query.query
-    content = agent({"input": query})
-    actual_content = content['output']
-    return actual_content
+if __name__ == '__main__':
+    main()
