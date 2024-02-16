@@ -1,30 +1,34 @@
 import os
-from dotenv import load_dotenv
-
-from langchain import PromptTemplate
-from langchain.agents import initialize_agent, Tool
-from langchain.agents import AgentType
-from langchain.chat_models import ChatOpenAI
-from langchain.llms import VertexAI
-from langchain.prompts import MessagesPlaceholder
-from langchain.memory import ConversationSummaryBufferMemory
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains.summarize import load_summarize_chain
-from langchain.tools import BaseTool
-from pydantic import BaseModel, Field
 from typing import Type
 from bs4 import BeautifulSoup
 import requests
 import json
 import re
+from dotenv import load_dotenv
+
+from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.memory import ConversationSummaryBufferMemory
+from langchain.chains.combine_documents.stuff import StuffDocumentsChain
+from langchain.chains.llm import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.pydantic_v1 import BaseModel, Field
 from langchain.schema import SystemMessage
+from langsmith.run_helpers import traceable
 from fastapi import FastAPI
 
 load_dotenv()
-open_api_key = os.getenv("OPENAI_API_KEY")
-serper_api_key = os.getenv("SERP_API_KEY")
+# open_api_key = os.getenv("OPENAI_API_KEY")
+# serper_api_key = os.getenv("SERP_API_KEY")
 
-def search(query):
+@tool("search")
+def search(query: str) -> str:
+    """
+    Google search to get latest information
+    """
     url = "https://google.serper.dev/search"
 
     payload = json.dumps({
@@ -42,7 +46,19 @@ def search(query):
 
     return response.text
 
-def scrape_website(objective: str, url: str):
+
+class ScrapeWebsiteInput(BaseModel):
+    """Inputs for scrape_website"""
+    url: str = Field(description="The url of the website to scrape")
+    objective: str = Field(description="The objective of the research")
+
+
+@tool("scrape_website", args_schema=ScrapeWebsiteInput)
+def scrape_website(url: str, objective: str) -> str:
+    """
+    scrape website, and also will summarize the content base on objective if content is too large
+    objective is the original objective & task that user give to the agent, url is the website to be scraped
+    """
     print("Scraping website...")
 
     # Send a GET request to the URL
@@ -68,61 +84,49 @@ def scrape_website(objective: str, url: str):
     else:
         print(f"HTTP request failed with status code {response.status_code}")
 
-def summary(objective, content):
-    llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-16k-0613")
-
+def summary(objective, content):    
+    content = content[:16385]
     text_splitter = RecursiveCharacterTextSplitter(
-        separators=["\n\n", "\n"], chunk_size=10000, chunk_overlap=500)
+        separators=["\n\n", "\n"], chunk_size=5000, chunk_overlap=500)
     docs = text_splitter.create_documents([content])
-    map_prompt = """
-    Write a summary of the following text for {objective}:
+
+    prompt_template = """
+    WEBSITE CONTENT: 
     "{text}"
     SUMMARY:
+    """ + f"""
+    --
+    Above is the scrapped website content, please remove noise & filter out key content that help on research object: {objective};
+    The summary should be detailed, with lots of reference & links to back up the research, as well as additional inofrmation for providing context
+    EXTRACTED KEY CONTENT (Be detailed):
     """
-    map_prompt_template = PromptTemplate(
-        template=map_prompt, input_variables=["text", "objective"])
 
-    summary_chain = load_summarize_chain(
-        llm=llm,
-        chain_type='map_reduce',
-        map_prompt=map_prompt_template,
-        combine_prompt=map_prompt_template,
-        verbose=True
-    )
+    prompt = PromptTemplate.from_template(prompt_template)
 
-    output = summary_chain.run(input_documents=docs, objective=objective)
+    llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125")
+    llm_chain = LLMChain(llm=llm,prompt=prompt)
 
-    return output
+    # Define StuffDocumentsChain
+    stuff_chain = StuffDocumentsChain(llm_chain=llm_chain, document_variable_name="text")
+    summary = stuff_chain.run(docs)
+    return summary
 
-class ScrapeWebsiteInput(BaseModel):
-    """Inputs for scrape_website"""
-    objective: str = Field(
-        description="The objective & task that users give to the agent")
-    url: str = Field(description="The url of the website to be scraped")
+# class ScrapeWebsiteTool(BaseTool):
+#     name = "scrape_website"
+#     description = "useful when you need to get data from a website url, passing both url and objective to the function; DO NOT make up any url, the url should only be from the search results"
+#     args_schema: Type[BaseModel] = ScrapeWebsiteInput
 
-class ScrapeWebsiteTool(BaseTool):
-    name = "scrape_website"
-    description = "useful when you need to get data from a website url, passing both url and objective to the function; DO NOT make up any url, the url should only be from the search results"
-    args_schema: Type[BaseModel] = ScrapeWebsiteInput
+#     def _run(self, objective: str, url: str):
+#         return scrape_website(objective, url)
 
-    def _run(self, objective: str, url: str):
-        return scrape_website(objective, url)
-
-    def _arun(self, url: str):
-        raise NotImplementedError("error here")
+#     def _arun(self, url: str):
+#         raise NotImplementedError("error here")
     
 # 3. Create langchain agent with the tools above
-tools = [
-    Tool(
-        name="Search",
-        func=search,
-        description="useful for when you need to answer questions about current events, data. You should ask targeted questions"
-    ),
-    ScrapeWebsiteTool(),
-]
+tools = [scrape_website,search]
 
-system_message = SystemMessage(
-    content="""You are a world class researcher, who can do detailed research on any topic and produce facts based results; 
+
+message = """You are a world class researcher, who can do detailed research on any topic and produce facts based results; 
             you do not make things up, you will try as hard as possible to gather facts & data to back up the research
             
             Please make sure you complete the objective above with the following rules:
@@ -132,28 +136,33 @@ system_message = SystemMessage(
             4/ You should not make things up, you should only write facts & data that you have gathered
             5/ In the final output, You should include all reference data & links to back up your research; You should include all reference data & links to back up your research
             6/ In the final output, You should include all reference data & links to back up your research; You should include all reference data & links to back up your research"""
-)
 
-agent_kwargs = {
-    "extra_prompt_messages": [MessagesPlaceholder(variable_name="memory")],
-    "system_message": system_message,
-}
-
-llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-16k-0613")
+llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125")
 memory = ConversationSummaryBufferMemory(
-    memory_key="memory", return_messages=True, llm=llm, max_token_limit=1000)
+    llm=llm,
+    memory_key="chat_history",
+    max_token_limit=3000,
+    return_messages=True)
 
-agent = initialize_agent(
-    tools,
-    llm,
-    agent=AgentType.OPENAI_FUNCTIONS,
-    verbose=True,
-    agent_kwargs=agent_kwargs,
-    memory=memory,
+prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            message,
+        ),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user","{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad")
+    ]
 )
+
+agent = create_openai_functions_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent,tools=tools,memory=memory)
 
 import streamlit as st
 #4. Use streamlit to create a web app
+
+@traceable(run_type="chain")
 def main():
     st.set_page_config(page_title="AI research agent", page_icon=":bird:")
 
@@ -163,7 +172,7 @@ def main():
     if query:
         st.write("Doing research for ", query)
 
-        result = agent({"input": query})
+        result = agent_executor.invoke({"input": query})
 
         st.info(result['output'])
 
