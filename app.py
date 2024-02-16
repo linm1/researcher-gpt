@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import requests
 import json
 import re
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
@@ -21,8 +21,8 @@ from langsmith.run_helpers import traceable
 from fastapi import FastAPI
 
 load_dotenv()
-# open_api_key = os.getenv("OPENAI_API_KEY")
-# serper_api_key = os.getenv("SERP_API_KEY")
+open_api_key = os.getenv("OPENAI_API_KEY")
+serp_api_key = os.getenv("SERP_API_KEY")
 
 @tool("search")
 def search(query: str) -> str:
@@ -36,7 +36,7 @@ def search(query: str) -> str:
     })
 
     headers = {
-        'X-API-KEY': serper_api_key,
+        'X-API-KEY': serp_api_key,
         'Content-Type': 'application/json'
     }
 
