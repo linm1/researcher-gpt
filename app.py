@@ -159,23 +159,36 @@ prompt = ChatPromptTemplate.from_messages(
 agent = create_openai_functions_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent,tools=tools,memory=memory)
 
-import streamlit as st
-#4. Use streamlit to create a web app
+app = FastAPI()
 
-@traceable(run_type="chain")
-def main():
-    st.set_page_config(page_title="AI research agent", page_icon=":bird:")
+class Query(BaseModel):
+    query: str
 
-    st.header("AI research agent :bird:")
-    query = st.text_input("Research goal")
+@app.post("/")
+def researcherAgent(query: Query):
+    query = query.query
+    content = agent_executor.invoke({"input": query})
+    act_content = content['output']
+    return act_content
 
-    if query:
-        st.write("Doing research for ", query)
+# import streamlit as st
+# #4. Use streamlit to create a web app
 
-        result = agent_executor.invoke({"input": query})
+# @traceable(run_type="chain")
+# def main():
+#     st.set_page_config(page_title="AI research agent", page_icon=":bird:")
 
-        st.info(result['output'])
+#     st.header("AI research agent :bird:")
+#     query = st.text_input("Research goal")
+
+#     if query:
+#         st.write("Doing research for ", query)
+
+#         result = agent_executor.invoke({"input": query})
+
+#         st.info(result['output'])
 
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
+
