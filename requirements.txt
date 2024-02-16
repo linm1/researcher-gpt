@@ -5,6 +5,7 @@ openai
 python-dotenv
 pydantic==1.*
 langchain
+langchain-openai
 bs4
 tiktoken
 streamlit
